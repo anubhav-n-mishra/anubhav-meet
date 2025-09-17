@@ -14,7 +14,6 @@ const WebRTCMeetingRoom = ({
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
-  const [isChatOpen, setIsChatOpen] = useState(false);
 
   const localVideoRef = useRef(null);
   const webrtcService = useRef(new WebRTCService());
@@ -138,6 +137,24 @@ const WebRTCMeetingRoom = ({
     const newAudioState = webrtcService.current.toggleAudio();
     setIsAudioEnabled(newAudioState);
     setLocalParticipant(prev => ({ ...prev, audioEnabled: newAudioState }));
+  };
+
+  const handleToggleScreenShare = async () => {
+    try {
+      if (isScreenSharing) {
+        // Stop screen sharing
+        await webrtcService.current.stopScreenShare();
+        setIsScreenSharing(false);
+      } else {
+        // Start screen sharing
+        await webrtcService.current.startScreenShare();
+        setIsScreenSharing(true);
+      }
+    } catch (error) {
+      console.error('Error toggling screen share:', error);
+      // Reset state on error
+      setIsScreenSharing(webrtcService.current.isScreenSharing());
+    }
   };
 
   const handleSendMessage = () => {
@@ -481,6 +498,13 @@ const WebRTCMeetingRoom = ({
           style={isVideoEnabled ? controlButtonStyle : disabledButtonStyle}
         >
           {isVideoEnabled ? '📹' : '📹'} {isVideoEnabled ? 'Stop Video' : 'Start Video'}
+        </button>
+
+        <button
+          onClick={handleToggleScreenShare}
+          style={isScreenSharing ? activeButtonStyle : controlButtonStyle}
+        >
+          {isScreenSharing ? '🔲' : '🖥️'} {isScreenSharing ? 'Stop Share' : 'Share Screen'}
         </button>
 
         <button

@@ -95,25 +95,52 @@ class WebRTCService {
     });
 
     this.socket.on('webrtc-offer', async (data) => {
-      console.log('Received offer from:', data.fromUserId);
+      console.log('📨 Received offer from:', data.fromUserId);
       const peer = this.peers.get(data.fromUserId);
       if (peer) {
-        await peer.signal(data.offer);
+        try {
+          await peer.signal(data.offer);
+          console.log('✅ Processed offer from:', data.fromUserId);
+        } catch (error) {
+          console.error('❌ Error processing offer:', error);
+        }
+      } else {
+        console.log('🔄 No peer found for offer, creating new peer connection');
+        // Create peer connection if it doesn't exist
+        this.createPeerConnection(data.fromUserId, data.fromUserName, false);
+        // Retry signaling after peer is created
+        setTimeout(async () => {
+          const retryPeer = this.peers.get(data.fromUserId);
+          if (retryPeer) {
+            await retryPeer.signal(data.offer);
+          }
+        }, 100);
       }
     });
 
     this.socket.on('webrtc-answer', async (data) => {
-      console.log('Received answer from:', data.fromUserId);
+      console.log('📨 Received answer from:', data.fromUserId);
       const peer = this.peers.get(data.fromUserId);
       if (peer) {
-        await peer.signal(data.answer);
+        try {
+          await peer.signal(data.answer);
+          console.log('✅ Processed answer from:', data.fromUserId);
+        } catch (error) {
+          console.error('❌ Error processing answer:', error);
+        }
       }
     });
 
     this.socket.on('webrtc-ice-candidate', async (data) => {
+      console.log('🧊 Received ICE candidate from:', data.fromUserId);
       const peer = this.peers.get(data.fromUserId);
       if (peer) {
-        await peer.signal(data.candidate);
+        try {
+          await peer.signal(data.candidate);
+          console.log('✅ Processed ICE candidate from:', data.fromUserId);
+        } catch (error) {
+          console.error('❌ Error processing ICE candidate:', error);
+        }
       }
     });
 
@@ -153,13 +180,26 @@ class WebRTCService {
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          // Free TURN servers for better connectivity
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+          }
+        ],
+        iceCandidatePoolSize: 10
       }
     });
 
     peer.on('signal', (signal) => {
-      console.log('Sending signal to:', peerId);
+      console.log('Sending signal to:', peerId, 'Type:', signal.type);
       if (signal.type === 'offer') {
         this.socket?.emit('webrtc-offer', {
           targetUserId: peerId,
@@ -171,6 +211,7 @@ class WebRTCService {
           answer: signal
         });
       } else {
+        // ICE candidate
         this.socket?.emit('webrtc-ice-candidate', {
           targetUserId: peerId,
           candidate: signal
@@ -179,22 +220,36 @@ class WebRTCService {
     });
 
     peer.on('stream', (stream) => {
-      console.log('Received stream from:', peerId);
+      console.log('✅ Received stream from:', peerId, peerName);
       this.callbacks.onStreamReceived?.(peerId, stream, peerName);
     });
 
     peer.on('connect', () => {
-      console.log('Peer connected:', peerId);
+      console.log('✅ Peer data channel connected:', peerId);
     });
 
     peer.on('error', (error) => {
-      console.error('Peer error:', error);
+      console.error('❌ Peer connection error:', peerId, error);
+      // Try to recreate connection after a delay
+      setTimeout(() => {
+        if (!peer.destroyed) {
+          console.log('Retrying peer connection to:', peerId);
+          this.removePeer(peerId);
+          this.createPeerConnection(peerId, peerName, !initiator);
+        }
+      }, 2000);
     });
 
     peer.on('close', () => {
       console.log('Peer connection closed:', peerId);
       this.removePeer(peerId);
     });
+
+    // Add stream immediately if available
+    if (this.localStream) {
+      console.log('Adding local stream to peer:', peerId);
+      peer.addStream(this.localStream);
+    }
 
     this.peers.set(peerId, peer);
     return peer;
@@ -257,6 +312,89 @@ class WebRTCService {
     if (this.localStream) {
       const audioTrack = this.localStream.getAudioTracks()[0];
       return audioTrack ? audioTrack.enabled : false;
+    }
+    return false;
+  }
+
+  async startScreenShare() {
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+
+      // Store original stream to restore later
+      this.originalStream = this.localStream;
+      this.localStream = screenStream;
+
+      // Update all peer connections with screen share
+      this.peers.forEach(peer => {
+        if (peer && screenStream) {
+          const videoTrack = screenStream.getVideoTracks()[0];
+          const audioTrack = screenStream.getAudioTracks()[0];
+          
+          // Replace video track
+          const sender = peer._pc.getSenders().find(s => 
+            s.track && s.track.kind === 'video'
+          );
+          if (sender && videoTrack) {
+            sender.replaceTrack(videoTrack);
+          }
+          
+          // Add audio track if available
+          if (audioTrack) {
+            peer.addTrack(audioTrack, screenStream);
+          }
+        }
+      });
+
+      // Listen for screen share end
+      screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+        this.stopScreenShare();
+      });
+
+      return screenStream;
+    } catch (error) {
+      console.error('Error starting screen share:', error);
+      throw error;
+    }
+  }
+
+  async stopScreenShare() {
+    try {
+      if (this.localStream && this.originalStream) {
+        // Stop screen share stream
+        this.localStream.getTracks().forEach(track => track.stop());
+        
+        // Restore original camera stream
+        this.localStream = this.originalStream;
+        this.originalStream = null;
+
+        // Update all peer connections back to camera
+        this.peers.forEach(peer => {
+          if (peer && this.localStream) {
+            const videoTrack = this.localStream.getVideoTracks()[0];
+            const sender = peer._pc.getSenders().find(s => 
+              s.track && s.track.kind === 'video'
+            );
+            if (sender && videoTrack) {
+              sender.replaceTrack(videoTrack);
+            }
+          }
+        });
+
+        return this.localStream;
+      }
+    } catch (error) {
+      console.error('Error stopping screen share:', error);
+      throw error;
+    }
+  }
+
+  isScreenSharing() {
+    if (this.localStream) {
+      const videoTrack = this.localStream.getVideoTracks()[0];
+      return videoTrack && videoTrack.label.includes('screen');
     }
     return false;
   }
