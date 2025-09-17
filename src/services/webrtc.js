@@ -70,30 +70,56 @@ class WebRTCService {
     });
 
     this.socket.on('room-joined', (data) => {
-      console.log('Room joined:', data);
+      console.log('🏠 Room joined:', data);
       this.callbacks.onRoomJoined?.(data);
       
-      // Create peer connections for existing users
-      data.participants?.forEach(participant => {
-        if (participant.id !== this.userId) {
-          // Add delay to ensure both sides are ready
-          setTimeout(() => {
-            this.createPeerConnection(participant.id, participant.name, true);
-          }, 100);
-        }
-      });
+      // Create peer connections for existing users only if we have local stream
+      if (this.localStream && data.participants) {
+        data.participants.forEach(participant => {
+          if (participant.id !== this.userId) {
+            // Add delay to ensure both sides are ready
+            setTimeout(() => {
+              console.log('🔄 Creating peer for existing participant:', participant.name);
+              this.createPeerConnection(participant.id, participant.name, true);
+            }, 1000);
+          }
+        });
+      } else if (!this.localStream) {
+        console.warn('⚠️ Local stream not ready, delaying peer creation');
+        setTimeout(() => {
+          if (this.localStream && data.participants) {
+            data.participants.forEach(participant => {
+              if (participant.id !== this.userId) {
+                this.createPeerConnection(participant.id, participant.name, true);
+              }
+            });
+          }
+        }, 2000);
+      }
     });
 
     this.socket.on('user-joined', (data) => {
-      console.log('User joined:', data);
+      console.log('👤 User joined:', data);
       this.callbacks.onUserJoined?.(data);
       
-      // Add a small delay to ensure both sides are ready
-      setTimeout(() => {
-        // Create peer connection for new user (initiator will be determined by user ID comparison)
-        const shouldInitiate = this.userId < data.userId; // Consistent initiator logic
-        this.createPeerConnection(data.userId, data.userName, shouldInitiate);
-      }, 500);
+      // Only create peer connection if we have local stream
+      if (this.localStream) {
+        // Add a small delay to ensure both sides are ready
+        setTimeout(() => {
+          // Create peer connection for new user (initiator will be determined by user ID comparison)
+          const shouldInitiate = this.userId < data.userId; // Consistent initiator logic
+          console.log('🔄 Creating peer for new user:', data.userName, 'shouldInitiate:', shouldInitiate);
+          this.createPeerConnection(data.userId, data.userName, shouldInitiate);
+        }, 1000);
+      } else {
+        console.warn('⚠️ Local stream not ready for new user, will retry');
+        setTimeout(() => {
+          if (this.localStream) {
+            const shouldInitiate = this.userId < data.userId;
+            this.createPeerConnection(data.userId, data.userName, shouldInitiate);
+          }
+        }, 2000);
+      }
     });
 
     this.socket.on('user-left', (data) => {
@@ -167,17 +193,22 @@ class WebRTCService {
   }
 
   createPeerConnection(peerId, peerName, initiator) {
-    console.log(`Creating peer connection to ${peerName} (${peerId}), initiator: ${initiator}`);
+    console.log(`🔄 Creating peer connection to ${peerName} (${peerId}), initiator: ${initiator}`);
     
     // Ensure we don't create duplicate peers
     if (this.peers.has(peerId)) {
       console.log('Peer already exists, removing old one');
       this.removePeer(peerId);
     }
+
+    // Ensure we have a local stream before creating peer
+    if (!this.localStream) {
+      console.error('❌ No local stream available for peer connection');
+      return null;
+    }
     
     const peer = new Peer({
       initiator,
-      stream: this.localStream,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -199,7 +230,7 @@ class WebRTCService {
     });
 
     peer.on('signal', (signal) => {
-      console.log('Sending signal to:', peerId, 'Type:', signal.type);
+      console.log('📡 Sending signal to:', peerId, 'Type:', signal.type);
       if (signal.type === 'offer') {
         this.socket?.emit('webrtc-offer', {
           targetUserId: peerId,
@@ -222,12 +253,18 @@ class WebRTCService {
     });
 
     peer.on('stream', (stream) => {
-      console.log('✅ Received stream from:', peerId, peerName);
+      console.log('🎥 ✅ Received stream from:', peerId, peerName);
+      console.log('Stream details:', {
+        id: stream.id,
+        active: stream.active,
+        videoTracks: stream.getVideoTracks().length,
+        audioTracks: stream.getAudioTracks().length
+      });
       this.callbacks.onStreamReceived?.(peerId, stream, peerName);
     });
 
     peer.on('connect', () => {
-      console.log('✅ Peer data channel connected:', peerId);
+      console.log('🔗 ✅ Peer data channel connected:', peerId);
     });
 
     peer.on('error', (error) => {
@@ -235,24 +272,32 @@ class WebRTCService {
       // Auto-retry on error
       setTimeout(() => {
         if (!peer.destroyed && !this.peers.has(peerId)) {
-          console.log('Retrying peer connection for:', peerId);
+          console.log('🔄 Retrying peer connection for:', peerId);
           this.createPeerConnection(peerId, peerName, !initiator);
         }
       }, 2000);
     });
 
     peer.on('close', () => {
-      console.log('Peer connection closed:', peerId);
+      console.log('🔌 Peer connection closed:', peerId);
       this.removePeer(peerId);
     });
 
-    // Add stream immediately if available
+    // Add stream after peer is created
     if (this.localStream) {
-      console.log('Adding local stream to peer:', peerId);
-      peer.addStream(this.localStream);
+      console.log('📹 Adding local stream to peer:', peerId, {
+        videoTracks: this.localStream.getVideoTracks().length,
+        audioTracks: this.localStream.getAudioTracks().length
+      });
+      try {
+        peer.addStream(this.localStream);
+      } catch (error) {
+        console.error('❌ Error adding stream to peer:', error);
+      }
     }
 
     this.peers.set(peerId, peer);
+    console.log('✅ Peer connection created and stored for:', peerId);
     return peer;
   }
 

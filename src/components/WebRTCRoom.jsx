@@ -72,8 +72,11 @@ const WebRTCMeetingRoom = ({
         }
 
         // Set local video
-        if (localVideoRef.current) {
+        if (localVideoRef.current && stream) {
           localVideoRef.current.srcObject = stream;
+          console.log('Local video stream set:', stream);
+          // Ensure video plays
+          localVideoRef.current.play().catch(e => console.log('Video play failed:', e));
         }
 
         // Set up WebRTC callbacks
