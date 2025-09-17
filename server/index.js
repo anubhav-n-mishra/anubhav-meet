@@ -115,7 +115,23 @@ io.on('connection', (socket) => {
     console.log(`Room ${roomId} now has ${room.participants.size} participants`);
   });
   
-  // WebRTC signaling
+  
+  // Simplified WebRTC signaling - single event for all signal types
+  socket.on('webrtc-signal', (data) => {
+    const { targetUserId, signal } = data;
+    console.log(`Relaying ${signal?.type || 'signal'} from ${socket.userId} to ${targetUserId}`);
+    
+    if (socket.roomId) {
+      socket.to(socket.roomId).emit('webrtc-signal', {
+        fromUserId: socket.userId,
+        fromUserName: socket.userName,
+        targetUserId,
+        signal
+      });
+    }
+  });
+
+  // WebRTC signaling - keep old handlers for compatibility
   socket.on('webrtc-offer', (data) => {
     const { targetUserId, offer } = data;
     console.log(`Relaying offer from ${socket.userId} to ${targetUserId}`);

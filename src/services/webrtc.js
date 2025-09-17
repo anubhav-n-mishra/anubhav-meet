@@ -77,10 +77,10 @@ class WebRTCService {
       if (this.localStream && data.participants) {
         data.participants.forEach(participant => {
           if (participant.id !== this.userId) {
-            // Add delay to ensure both sides are ready
+            // New users do NOT initiate to existing users
             setTimeout(() => {
-              console.log('🔄 Creating peer for existing participant:', participant.name);
-              this.createPeerConnection(participant.id, participant.name, true);
+              console.log('🔄 Creating peer for existing participant:', participant.name, 'as non-initiator');
+              this.createPeerConnection(participant.id, participant.name, false);
             }, 1000);
           }
         });
@@ -90,7 +90,7 @@ class WebRTCService {
           if (this.localStream && data.participants) {
             data.participants.forEach(participant => {
               if (participant.id !== this.userId) {
-                this.createPeerConnection(participant.id, participant.name, true);
+                this.createPeerConnection(participant.id, participant.name, false);
               }
             });
           }
@@ -104,19 +104,16 @@ class WebRTCService {
       
       // Only create peer connection if we have local stream
       if (this.localStream) {
-        // Add a small delay to ensure both sides are ready
+        // Simple rule: existing users initiate to new users
         setTimeout(() => {
-          // Create peer connection for new user (initiator will be determined by user ID comparison)
-          const shouldInitiate = this.userId < data.userId; // Consistent initiator logic
-          console.log('🔄 Creating peer for new user:', data.userName, 'shouldInitiate:', shouldInitiate);
-          this.createPeerConnection(data.userId, data.userName, shouldInitiate);
+          console.log('🔄 Creating peer for new user:', data.userName, 'as initiator');
+          this.createPeerConnection(data.userId, data.userName, true);
         }, 1000);
       } else {
         console.warn('⚠️ Local stream not ready for new user, will retry');
         setTimeout(() => {
           if (this.localStream) {
-            const shouldInitiate = this.userId < data.userId;
-            this.createPeerConnection(data.userId, data.userName, shouldInitiate);
+            this.createPeerConnection(data.userId, data.userName, true);
           }
         }, 2000);
       }
@@ -128,6 +125,26 @@ class WebRTCService {
       this.callbacks.onUserLeft?.(data);
     });
 
+    this.socket.on('webrtc-signal', async (data) => {
+      console.log('📨 Received signal from:', data.fromUserId, 'Type:', data.signal?.type);
+      
+      let peer = this.peers.get(data.fromUserId);
+      if (!peer) {
+        console.log('🔄 Creating peer for incoming signal');
+        peer = this.createPeerConnection(data.fromUserId, data.fromUserName || 'Unknown', false);
+      }
+      
+      if (peer && data.signal) {
+        try {
+          peer.signal(data.signal);
+          console.log('✅ Processed signal from:', data.fromUserId);
+        } catch (error) {
+          console.error('❌ Error processing signal:', error);
+        }
+      }
+    });
+
+    // Keep old handlers for backward compatibility
     this.socket.on('webrtc-offer', async (data) => {
       console.log('📨 Received offer from:', data.fromUserId);
       let peer = this.peers.get(data.fromUserId);
@@ -138,7 +155,7 @@ class WebRTCService {
       
       if (peer) {
         try {
-          await peer.signal(data.offer);
+          peer.signal(data.offer);
           console.log('✅ Processed offer from:', data.fromUserId);
         } catch (error) {
           console.error('❌ Error processing offer:', error);
@@ -151,7 +168,7 @@ class WebRTCService {
       const peer = this.peers.get(data.fromUserId);
       if (peer) {
         try {
-          await peer.signal(data.answer);
+          peer.signal(data.answer);
           console.log('✅ Processed answer from:', data.fromUserId);
         } catch (error) {
           console.error('❌ Error processing answer:', error);
@@ -164,7 +181,7 @@ class WebRTCService {
       const peer = this.peers.get(data.fromUserId);
       if (peer) {
         try {
-          await peer.signal(data.candidate);
+          peer.signal(data.candidate);
           console.log('✅ Processed ICE candidate from:', data.fromUserId);
         } catch (error) {
           console.error('❌ Error processing ICE candidate:', error);
@@ -206,99 +223,75 @@ class WebRTCService {
       console.error('❌ No local stream available for peer connection');
       return null;
     }
-    
-    const peer = new Peer({
-      initiator,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-          }
-        ],
-        iceCandidatePoolSize: 10
-      }
-    });
 
-    peer.on('signal', (signal) => {
-      console.log('📡 Sending signal to:', peerId, 'Type:', signal.type);
-      if (signal.type === 'offer') {
-        this.socket?.emit('webrtc-offer', {
-          targetUserId: peerId,
-          offer: signal,
-          fromUserName: this.userName
-        });
-      } else if (signal.type === 'answer') {
-        this.socket?.emit('webrtc-answer', {
-          targetUserId: peerId,
-          answer: signal,
-          fromUserName: this.userName
-        });
-      } else {
-        this.socket?.emit('webrtc-ice-candidate', {
-          targetUserId: peerId,
-          candidate: signal,
-          fromUserName: this.userName
-        });
-      }
-    });
-
-    peer.on('stream', (stream) => {
-      console.log('🎥 ✅ Received stream from:', peerId, peerName);
-      console.log('Stream details:', {
-        id: stream.id,
-        active: stream.active,
-        videoTracks: stream.getVideoTracks().length,
-        audioTracks: stream.getAudioTracks().length
-      });
-      this.callbacks.onStreamReceived?.(peerId, stream, peerName);
-    });
-
-    peer.on('connect', () => {
-      console.log('🔗 ✅ Peer data channel connected:', peerId);
-    });
-
-    peer.on('error', (error) => {
-      console.error('❌ Peer connection error:', peerId, error);
-      // Auto-retry on error
-      setTimeout(() => {
-        if (!peer.destroyed && !this.peers.has(peerId)) {
-          console.log('🔄 Retrying peer connection for:', peerId);
-          this.createPeerConnection(peerId, peerName, !initiator);
+    try {
+      const peer = new Peer({
+        initiator: initiator,
+        stream: this.localStream, // Pass stream in constructor
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            }
+          ]
         }
-      }, 2000);
-    });
-
-    peer.on('close', () => {
-      console.log('🔌 Peer connection closed:', peerId);
-      this.removePeer(peerId);
-    });
-
-    // Add stream after peer is created
-    if (this.localStream) {
-      console.log('📹 Adding local stream to peer:', peerId, {
-        videoTracks: this.localStream.getVideoTracks().length,
-        audioTracks: this.localStream.getAudioTracks().length
       });
-      try {
-        peer.addStream(this.localStream);
-      } catch (error) {
-        console.error('❌ Error adding stream to peer:', error);
-      }
-    }
 
-    this.peers.set(peerId, peer);
-    console.log('✅ Peer connection created and stored for:', peerId);
-    return peer;
+      peer.on('signal', (data) => {
+        console.log('📡 Sending signal to:', peerId, 'Type:', data.type);
+        this.socket.emit('webrtc-signal', {
+          targetUserId: peerId,
+          fromUserId: this.userId,
+          fromUserName: this.userName,
+          signal: data
+        });
+      });
+
+      peer.on('stream', (stream) => {
+        console.log('🎥 ✅ Received stream from:', peerId, peerName);
+        console.log('Stream details:', {
+          id: stream.id,
+          active: stream.active,
+          videoTracks: stream.getVideoTracks().length,
+          audioTracks: stream.getAudioTracks().length
+        });
+        this.callbacks.onStreamReceived?.(peerId, stream, peerName);
+      });
+
+      peer.on('connect', () => {
+        console.log('🔗 ✅ Peer connected:', peerId);
+      });
+
+      peer.on('data', (data) => {
+        console.log('📨 Data received from peer:', peerId, data);
+      });
+
+      peer.on('error', (err) => {
+        console.error('❌ Peer error:', peerId, err);
+      });
+
+      peer.on('close', () => {
+        console.log('🔌 Peer closed:', peerId);
+        this.removePeer(peerId);
+      });
+
+      this.peers.set(peerId, peer);
+      console.log('✅ Peer connection created and stored for:', peerId);
+      return peer;
+
+    } catch (error) {
+      console.error('❌ Error creating peer connection:', error);
+      return null;
+    }
   }
 
   removePeer(peerId) {
