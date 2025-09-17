@@ -1,0 +1,12 @@
+version: 2
+build:
+  - name: anubhav-meet-server
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    rootDir: server
+    envVars:
+      - key: NODE_ENV
+        value: production
