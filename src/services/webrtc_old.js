@@ -14,7 +14,6 @@ class WebRTCService {
     this.roomId = null;
     this.userId = null;
     this.userName = null;
-    this.originalStream = null;
     this.callbacks = {
       onStreamReceived: null,
       onPeerLeft: null,
@@ -36,15 +35,18 @@ class WebRTCService {
       
       // Update all peer connections with new stream
       this.peers.forEach(peer => {
-        if (peer && this.localStream) {
+        if (peer && peer._pc && this.localStream) {
           try {
             // Use simple-peer's built-in stream replacement
-            if (peer.streams && peer.streams[0]) {
-              peer.removeStream(peer.streams[0]);
-            }
+            peer.removeStream(peer.streams[0]);
             peer.addStream(this.localStream);
           } catch (error) {
             console.warn('Error updating peer stream:', error);
+            // Fallback: recreate the peer connection
+            const peerId = [...this.peers.entries()].find(([id, p]) => p === peer)?.[0];
+            if (peerId) {
+              this.removePeer(peerId);
+            }
           }
         }
       });
@@ -56,8 +58,11 @@ class WebRTCService {
     }
   }
 
-  connectToSignalingServer(url) {
-    this.socket = io(url, {
+  connectToSignalingServer(serverUrl) {
+    const socketUrl = serverUrl || import.meta.env.VITE_SIGNALING_URL || 'https://anubhav-meet-server.onrender.com';
+    console.log('Connecting to signaling server:', socketUrl);
+    
+    this.socket = io(socketUrl, {
       transports: ['websocket', 'polling']
     });
 
@@ -65,19 +70,13 @@ class WebRTCService {
       console.log('Connected to signaling server');
     });
 
-    this.socket.on('disconnect', () => {
-      console.log('Disconnected from signaling server');
-    });
-
     this.socket.on('room-joined', (data) => {
       console.log('Room joined:', data);
       this.callbacks.onRoomJoined?.(data);
       
-      // Create peer connections for existing users
-      data.participants?.forEach(participant => {
-        if (participant.userId !== this.userId) {
-          this.createPeerConnection(participant.userId, participant.userName, true);
-        }
+      // Initiate connections to existing participants
+      data.participants.forEach(participant => {
+        this.createPeerConnection(participant.id, participant.name, true);
       });
     });
 
@@ -99,7 +98,8 @@ class WebRTCService {
       console.log('📨 Received offer from:', data.fromUserId);
       let peer = this.peers.get(data.fromUserId);
       if (!peer) {
-        console.log('🔄 Creating peer connection for incoming offer');
+        console.log('🔄 No peer found for offer, creating new peer connection');
+        // Create peer connection if it doesn't exist
         peer = this.createPeerConnection(data.fromUserId, data.fromUserName || 'Unknown', false);
       }
       
@@ -109,7 +109,25 @@ class WebRTCService {
           console.log('✅ Processed offer from:', data.fromUserId);
         } catch (error) {
           console.error('❌ Error processing offer:', error);
+          // Try recreating the peer connection
+          this.removePeer(data.fromUserId);
+          const newPeer = this.createPeerConnection(data.fromUserId, data.fromUserName || 'Unknown', false);
+          try {
+            await newPeer.signal(data.offer);
+            console.log('✅ Retry processed offer from:', data.fromUserId);
+          } catch (retryError) {
+            console.error('❌ Retry failed for offer:', retryError);
+          }
         }
+      }
+    });
+        // Retry signaling after peer is created
+        setTimeout(async () => {
+          const retryPeer = this.peers.get(data.fromUserId);
+          if (retryPeer) {
+            await retryPeer.signal(data.offer);
+          }
+        }, 100);
       }
     });
 
@@ -147,6 +165,13 @@ class WebRTCService {
         timestamp: data.timestamp
       });
     });
+
+    this.socket.on('participant-media-change', (data) => {
+      // Handle media state changes from other participants
+      console.log('Participant media change:', data);
+    });
+
+    return this.socket;
   }
 
   joinRoom(roomId, userId, userName) {
@@ -170,6 +195,7 @@ class WebRTCService {
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
+          // Free TURN servers for better connectivity
           {
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
@@ -198,6 +224,7 @@ class WebRTCService {
           answer: signal
         });
       } else {
+        // ICE candidate
         this.socket?.emit('webrtc-ice-candidate', {
           targetUserId: peerId,
           candidate: signal
@@ -216,6 +243,14 @@ class WebRTCService {
 
     peer.on('error', (error) => {
       console.error('❌ Peer connection error:', peerId, error);
+      // Try to recreate connection after a delay
+      setTimeout(() => {
+        if (!peer.destroyed) {
+          console.log('Retrying peer connection to:', peerId);
+          this.removePeer(peerId);
+          this.createPeerConnection(peerId, peerName, !initiator);
+        }
+      }, 2000);
     });
 
     peer.on('close', () => {
@@ -247,6 +282,13 @@ class WebRTCService {
       const videoTrack = this.localStream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
+        
+        // Notify signaling server
+        this.socket?.emit('media-state-change', {
+          videoEnabled: videoTrack.enabled,
+          audioEnabled: this.isAudioEnabled()
+        });
+        
         return videoTrack.enabled;
       }
     }
@@ -258,6 +300,13 @@ class WebRTCService {
       const audioTrack = this.localStream.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
+        
+        // Notify signaling server
+        this.socket?.emit('media-state-change', {
+          videoEnabled: this.isVideoEnabled(),
+          audioEnabled: audioTrack.enabled
+        });
+        
         return audioTrack.enabled;
       }
     }
@@ -295,9 +344,8 @@ class WebRTCService {
       this.peers.forEach(peer => {
         if (peer && screenStream) {
           try {
-            if (peer.streams && peer.streams[0]) {
-              peer.removeStream(peer.streams[0]);
-            }
+            // Use simple-peer's built-in stream replacement
+            peer.removeStream(peer.streams[0]);
             peer.addStream(screenStream);
           } catch (error) {
             console.warn('Error updating peer with screen share:', error);
@@ -331,9 +379,8 @@ class WebRTCService {
         this.peers.forEach(peer => {
           if (peer && this.localStream) {
             try {
-              if (peer.streams && peer.streams[0]) {
-                peer.removeStream(peer.streams[0]);
-              }
+              // Use simple-peer's built-in stream replacement
+              peer.removeStream(peer.streams[0]);
               peer.addStream(this.localStream);
             } catch (error) {
               console.warn('Error restoring camera stream:', error);
@@ -378,11 +425,15 @@ class WebRTCService {
       this.localStream = null;
     }
 
-    // Disconnect socket
+    // Disconnect from signaling server
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
     }
+
+    this.roomId = null;
+    this.userId = null;
+    this.userName = null;
   }
 }
 

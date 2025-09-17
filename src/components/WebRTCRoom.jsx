@@ -27,11 +27,49 @@ const WebRTCMeetingRoom = ({
         const signalingUrl = import.meta.env.VITE_SIGNALING_URL || 'https://anubhav-meet-server.onrender.com';
         webrtcService.current.connectToSignalingServer(signalingUrl);
 
-        // Initialize media
-        const stream = await webrtcService.current.initializeMedia({
-          video: true,
-          audio: true
-        });
+        // Initialize media with fallback constraints for mobile
+        let stream;
+        try {
+          // Try with high quality first
+          stream = await webrtcService.current.initializeMedia({
+            video: {
+              width: { ideal: 1280, max: 1920 },
+              height: { ideal: 720, max: 1080 },
+              facingMode: 'user'
+            },
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+        } catch (error) {
+          console.warn('High quality video failed, trying basic constraints:', error);
+          try {
+            // Fallback for mobile/older devices
+            stream = await webrtcService.current.initializeMedia({
+              video: {
+                width: { ideal: 640, max: 1280 },
+                height: { ideal: 480, max: 720 },
+                facingMode: 'user'
+              },
+              audio: true
+            });
+          } catch (error2) {
+            console.warn('Basic video failed, trying audio only:', error2);
+            try {
+              // Audio only fallback
+              stream = await webrtcService.current.initializeMedia({
+                video: false,
+                audio: true
+              });
+              setIsVideoEnabled(false);
+            } catch (error3) {
+              console.error('All media access failed:', error3);
+              throw error3;
+            }
+          }
+        }
 
         // Set local video
         if (localVideoRef.current) {
@@ -49,7 +87,9 @@ const WebRTCMeetingRoom = ({
                 updated[existingIndex] = { 
                   ...updated[existingIndex], 
                   stream,
-                  name: peerName
+                  name: peerName,
+                  videoEnabled: true,
+                  audioEnabled: true
                 };
               } else {
                 updated.push({
@@ -80,7 +120,20 @@ const WebRTCMeetingRoom = ({
           },
           onUserJoined: (data) => {
             console.log('New user joined:', data);
-            // Participant will be added when stream is received
+            // Add participant immediately when they join (even before stream)
+            setParticipants(prev => {
+              const existingIndex = prev.findIndex(p => p.id === data.userId);
+              if (existingIndex === -1) {
+                return [...prev, {
+                  id: data.userId,
+                  name: data.userName,
+                  stream: null,
+                  videoEnabled: false,
+                  audioEnabled: false
+                }];
+              }
+              return prev;
+            });
           },
           onUserLeft: (data) => {
             console.log('User left room:', data);
