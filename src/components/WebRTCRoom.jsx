@@ -19,10 +19,15 @@ const WebRTCMeetingRoom = ({
   const localVideoRef = useRef(null);
   const webrtcService = useRef(new WebRTCService());
 
-  // Initialize WebRTC
+  // Initialize WebRTC with signaling server
   useEffect(() => {
     const initializeWebRTC = async () => {
       try {
+        // Connect to signaling server
+        const signalingUrl = import.meta.env.VITE_SIGNALING_URL || 'http://localhost:3001';
+        webrtcService.current.connectToSignalingServer(signalingUrl);
+
+        // Initialize media
         const stream = await webrtcService.current.initializeMedia({
           video: true,
           audio: true
@@ -35,17 +40,21 @@ const WebRTCMeetingRoom = ({
 
         // Set up WebRTC callbacks
         webrtcService.current.setCallbacks({
-          onStreamReceived: (peerId, stream) => {
-            console.log('Stream received from:', peerId);
+          onStreamReceived: (peerId, stream, peerName) => {
+            console.log('Stream received from:', peerName, peerId);
             setParticipants(prev => {
               const updated = [...prev];
               const existingIndex = updated.findIndex(p => p.id === peerId);
               if (existingIndex >= 0) {
-                updated[existingIndex] = { ...updated[existingIndex], stream };
+                updated[existingIndex] = { 
+                  ...updated[existingIndex], 
+                  stream,
+                  name: peerName
+                };
               } else {
                 updated.push({
                   id: peerId,
-                  name: `User ${peerId.slice(0, 6)}`,
+                  name: peerName,
                   stream,
                   videoEnabled: true,
                   audioEnabled: true
@@ -55,6 +64,7 @@ const WebRTCMeetingRoom = ({
             });
           },
           onPeerLeft: (peerId) => {
+            console.log('Peer left:', peerId);
             setParticipants(prev => prev.filter(p => p.id !== peerId));
           },
           onDataReceived: (peerId, data) => {
@@ -64,11 +74,24 @@ const WebRTCMeetingRoom = ({
                 senderId: peerId,
                 senderName: data.senderName,
                 message: data.message,
-                timestamp: new Date()
+                timestamp: new Date(data.timestamp)
               }]);
             }
+          },
+          onUserJoined: (data) => {
+            console.log('New user joined:', data);
+            // Participant will be added when stream is received
+          },
+          onUserLeft: (data) => {
+            console.log('User left room:', data);
+            setParticipants(prev => prev.filter(p => p.id !== data.userId));
           }
         });
+
+        // Join the room
+        const userId = localParticipant.id;
+        const userName = localParticipant.name;
+        webrtcService.current.joinRoom(meetingId, userId, userName);
 
       } catch (error) {
         console.error('Failed to initialize WebRTC:', error);
@@ -82,10 +105,33 @@ const WebRTCMeetingRoom = ({
     };
   }, []);
 
-  const handleToggleVideo = () => {
-    const newVideoState = webrtcService.current.toggleVideo();
-    setIsVideoEnabled(newVideoState);
-    setLocalParticipant(prev => ({ ...prev, videoEnabled: newVideoState }));
+  const handleToggleVideo = async () => {
+    if (isVideoEnabled) {
+      // Turn off video
+      webrtcService.current.toggleVideo();
+      setIsVideoEnabled(false);
+      setLocalParticipant(prev => ({ ...prev, videoEnabled: false }));
+    } else {
+      // Turn on video - need to get new stream
+      try {
+        const newStream = await webrtcService.current.initializeMedia({
+          video: true,
+          audio: isAudioEnabled
+        });
+        
+        // Update local video
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = newStream;
+        }
+        
+        setIsVideoEnabled(true);
+        setLocalParticipant(prev => ({ ...prev, videoEnabled: true }));
+      } catch (error) {
+        console.error('Failed to restart video:', error);
+        // Keep video disabled if we can't access camera
+        setIsVideoEnabled(false);
+      }
+    }
   };
 
   const handleToggleAudio = () => {
@@ -96,15 +142,8 @@ const WebRTCMeetingRoom = ({
 
   const handleSendMessage = () => {
     if (newMessage.trim()) {
-      const message = {
-        id: Date.now().toString(),
-        senderId: localParticipant.id,
-        senderName: localParticipant.name,
-        message: newMessage.trim(),
-        timestamp: new Date()
-      };
-
-      setChatMessages(prev => [...prev, message]);
+      // Send via signaling server
+      webrtcService.current.sendChatMessage(newMessage.trim());
       setNewMessage('');
     }
   };
