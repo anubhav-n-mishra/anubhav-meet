@@ -3,7 +3,7 @@ if (typeof global === 'undefined') {
   window.global = window;
 }
 
-import Peer from 'simple-peer';
+import SimplePeer from 'simple-peer';
 import io from 'socket.io-client';
 
 class WebRTCService {
@@ -225,7 +225,7 @@ class WebRTCService {
     }
 
     try {
-      const peer = new Peer({
+      const peer = new SimplePeer({
         initiator: initiator,
         stream: this.localStream, // Pass stream in constructor
         config: {
