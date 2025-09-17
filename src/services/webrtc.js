@@ -85,8 +85,12 @@ class WebRTCService {
       console.log('User joined:', data);
       this.callbacks.onUserJoined?.(data);
       
-      // Create peer connection for new user (they will initiate)
-      this.createPeerConnection(data.userId, data.userName, false);
+      // Add a small delay to ensure both sides are ready
+      setTimeout(() => {
+        // Create peer connection for new user (initiator will be determined by user ID comparison)
+        const shouldInitiate = this.userId < data.userId; // Consistent initiator logic
+        this.createPeerConnection(data.userId, data.userName, shouldInitiate);
+      }, 500);
     });
 
     this.socket.on('user-left', (data) => {
@@ -162,6 +166,12 @@ class WebRTCService {
   createPeerConnection(peerId, peerName, initiator) {
     console.log(`Creating peer connection to ${peerName} (${peerId}), initiator: ${initiator}`);
     
+    // Ensure we don't create duplicate peers
+    if (this.peers.has(peerId)) {
+      console.log('Peer already exists, removing old one');
+      this.removePeer(peerId);
+    }
+    
     const peer = new Peer({
       initiator,
       stream: this.localStream,
@@ -190,17 +200,20 @@ class WebRTCService {
       if (signal.type === 'offer') {
         this.socket?.emit('webrtc-offer', {
           targetUserId: peerId,
-          offer: signal
+          offer: signal,
+          fromUserName: this.userName
         });
       } else if (signal.type === 'answer') {
         this.socket?.emit('webrtc-answer', {
           targetUserId: peerId,
-          answer: signal
+          answer: signal,
+          fromUserName: this.userName
         });
       } else {
         this.socket?.emit('webrtc-ice-candidate', {
           targetUserId: peerId,
-          candidate: signal
+          candidate: signal,
+          fromUserName: this.userName
         });
       }
     });
@@ -216,6 +229,13 @@ class WebRTCService {
 
     peer.on('error', (error) => {
       console.error('❌ Peer connection error:', peerId, error);
+      // Auto-retry on error
+      setTimeout(() => {
+        if (!peer.destroyed && !this.peers.has(peerId)) {
+          console.log('Retrying peer connection for:', peerId);
+          this.createPeerConnection(peerId, peerName, !initiator);
+        }
+      }, 2000);
     });
 
     peer.on('close', () => {
