@@ -24,7 +24,7 @@ const WebRTCMeetingRoom = ({
     const initializeWebRTC = async () => {
       try {
         // Connect to signaling server
-        const signalingUrl = import.meta.env.VITE_SIGNALING_URL || 'https://anubhav-meet-server.up.railway.app';
+        const signalingUrl = import.meta.env.VITE_SIGNALING_URL || 'https://anubhav-meet-server.onrender.com';
         webrtcService.current.connectToSignalingServer(signalingUrl);
 
         // Initialize media

@@ -59,7 +59,7 @@ class WebRTCService {
   }
 
   connectToSignalingServer(serverUrl) {
-    const socketUrl = serverUrl || import.meta.env.VITE_SIGNALING_URL || 'https://anubhav-meet-server.up.railway.app';
+    const socketUrl = serverUrl || import.meta.env.VITE_SIGNALING_URL || 'https://anubhav-meet-server.onrender.com';
     console.log('Connecting to signaling server:', socketUrl);
     
     this.socket = io(socketUrl, {
