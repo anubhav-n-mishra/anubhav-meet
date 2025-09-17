@@ -1,10 +1,11 @@
-// Browser polyfill for Node.js global
-if (typeof global === 'undefined') {
-  window.global = window;
-}
-
+import { Buffer } from 'buffer';
 import SimplePeer from 'simple-peer';
 import io from 'socket.io-client';
+
+// Make Buffer available globally for simple-peer
+if (typeof window !== 'undefined') {
+  window.Buffer = Buffer;
+}
 
 class WebRTCService {
   constructor() {
@@ -225,6 +226,13 @@ class WebRTCService {
     }
 
     try {
+      console.log('🔍 Debug - SimplePeer constructor:', typeof SimplePeer, SimplePeer);
+      
+      if (!SimplePeer) {
+        console.error('❌ SimplePeer is undefined - simple-peer import failed');
+        return null;
+      }
+
       const peer = new SimplePeer({
         initiator: initiator,
         stream: this.localStream, // Pass stream in constructor

@@ -8,6 +8,11 @@ export default defineConfig({
     global: 'globalThis',
   },
   optimizeDeps: {
-    include: ['simple-peer']
-  }
+    include: ['simple-peer', 'buffer']
+  },
+  resolve: {
+    alias: {
+      buffer: 'buffer',
+    },
+  },
 })
