@@ -75,8 +75,11 @@ class WebRTCService {
       
       // Create peer connections for existing users
       data.participants?.forEach(participant => {
-        if (participant.userId !== this.userId) {
-          this.createPeerConnection(participant.userId, participant.userName, true);
+        if (participant.id !== this.userId) {
+          // Add delay to ensure both sides are ready
+          setTimeout(() => {
+            this.createPeerConnection(participant.id, participant.name, true);
+          }, 100);
         }
       });
     });

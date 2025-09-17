@@ -118,6 +118,28 @@ const WebRTCMeetingRoom = ({
               }]);
             }
           },
+          onRoomJoined: (data) => {
+            console.log('Room joined with existing participants:', data);
+            // Add existing participants to the list
+            if (data.participants && data.participants.length > 0) {
+              setParticipants(prev => {
+                const newParticipants = [...prev];
+                data.participants.forEach(participant => {
+                  const existingIndex = newParticipants.findIndex(p => p.id === participant.id);
+                  if (existingIndex === -1) {
+                    newParticipants.push({
+                      id: participant.id,
+                      name: participant.name,
+                      stream: null,
+                      videoEnabled: false,
+                      audioEnabled: false
+                    });
+                  }
+                });
+                return newParticipants;
+              });
+            }
+          },
           onUserJoined: (data) => {
             console.log('New user joined:', data);
             // Add participant immediately when they join (even before stream)
