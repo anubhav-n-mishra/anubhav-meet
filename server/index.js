@@ -114,8 +114,7 @@ io.on('connection', (socket) => {
     
     console.log(`Room ${roomId} now has ${room.participants.size} participants`);
   });
-  
-  
+
   // Simplified WebRTC signaling - single event for all signal types
   socket.on('webrtc-signal', (data) => {
     const { targetUserId, signal } = data;
